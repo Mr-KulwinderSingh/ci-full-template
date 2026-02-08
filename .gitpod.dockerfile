@@ -1,94 +1,59 @@
 FROM gitpod/workspace-base
 
-RUN echo "CI version from base"
-
-### NodeJS ###
 USER gitpod
+
+### NodeJS (Using NVM) ###
 ENV NODE_VERSION=16.13.0
-ENV TRIGGER_REBUILD=1
-RUN curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | PROFILE=/dev/null bash \
-    && bash -c ". .nvm/nvm.sh \
+RUN curl -fsSL https://raw.githubusercontent.com | bash \
+    && bash -c ". $HOME/.nvm/nvm.sh \
         && nvm install $NODE_VERSION \
         && nvm use $NODE_VERSION \
         && nvm alias default $NODE_VERSION \
         && npm install -g typescript yarn node-gyp" \
-    && echo ". ~/.nvm/nvm.sh"  >> /home/gitpod/.bashrc.d/50-node
-ENV PATH=$PATH:/home/gitpod/.nvm/versions/node/v${NODE_VERSION}/bin
+    && echo 'export NVM_DIR="$HOME/.nvm"' >> ~/.bashrc.d/50-node \
+    && echo '[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"' >> ~/.bashrc.d/50-node
+# Corrected PATH for Node
+ENV PATH=$HOME/.nvm/versions/node/v${NODE_VERSION}/bin:$PATH
 
-### Python ###
-USER gitpod
-RUN sudo install-packages python3-pip
-ENV PYTHON_VERSION 3.12.2
+### Python (Using pyenv) ###
+ENV PYTHON_VERSION=3.12.2
+ENV PYENV_ROOT=$HOME/.pyenv
+ENV PATH=$PYENV_ROOT/bin:$PYENV_ROOT/shims:$PATH
 
-ENV PATH=$HOME/.pyenv/bin:$HOME/.pyenv/shims:$PATH
-RUN curl -fsSL https://github.com/pyenv/pyenv-installer/raw/master/bin/pyenv-installer | bash \
-    && { echo; \
-        echo 'eval "$(pyenv init -)"'; \
-        echo 'eval "$(pyenv virtualenv-init -)"'; } >> /home/gitpod/.bashrc.d/60-python \
-    && pyenv update \
+RUN curl https://pyenv.run | bash \
+    && echo 'export PYENV_ROOT="$HOME/.pyenv"' >> ~/.bashrc.d/60-python \
+    && echo '[[ -d $PYENV_ROOT/bin ]] && export PATH="$PYENV_ROOT/bin:$PATH"' >> ~/.bashrc.d/60-python \
+    && echo 'eval "$(pyenv init -)"' >> ~/.bashrc.d/60-python \
     && pyenv install $PYTHON_VERSION \
     && pyenv global $PYTHON_VERSION \
-    && python3 -m pip install --no-cache-dir --upgrade pip \
-    && python3 -m pip install --no-cache-dir --upgrade \
-        setuptools wheel virtualenv pipenv pylint rope flake8 \
-        mypy autopep8 pep8 pylama pydocstyle bandit notebook \
-        twine \
-    && sudo rm -rf /tmp/*USER gitpod
-ENV PYTHONUSERBASE=/workspace/.pip-modules \
-    PIP_USER=yes
-ENV PATH=$PYTHONUSERBASE/bin:$PATH
+    && python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel virtualenv pipenv pylint
 
-# Setup Heroku CLI
-RUN curl https://cli-assets.heroku.com/install.sh | sh
+### Heroku CLI ###
+RUN curl https://cli-assets.heroku.com/install.sh | sudo sh
 
-# Setup MongoDB (6.0 from Jammy repos)
-RUN wget http://archive.ubuntu.com/ubuntu/pool/main/o/openssl/libssl1.1_1.1.1f-1ubuntu2_amd64.deb && sudo dpkg -i libssl1.1_1.1.1f-1ubuntu2_amd64.deb && \
-    sudo apt-get install gnupg && \
-    curl -fsSL https://www.mongodb.org/static/pgp/server-6.0.asc | sudo gpg -o /usr/share/keyrings/mongodb-server-6.0.gpg --dearmor && \
-    echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list && \
-    sudo apt-get update -y  && \
-    sudo apt-get install -y mongodb-mongosh  && \
-    sudo apt-get clean -y && \
-    sudo apt-get install -y links && \
-    sudo rm -rf /var/cache/apt/* /var/lib/apt/lists/* /tmp/* /home/gitpod/*.deb && \
-    sudo chown -R gitpod:gitpod /home/gitpod/.cache/heroku/
+### MongoDB 6.0 & PostgreSQL 12 ###
+RUN sudo apt-get update && sudo apt-get install -y gnupg wget \
+    && wget -qO - https://www.mongodb.org/static/pgp/server-6.0.asc | sudo gpg --dearmor -o /usr/share/keyrings/mongodb-server-6.0.gpg \
+    && echo "deb [ arch=amd64,arm64 signed-by=/usr/share/keyrings/mongodb-server-6.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/6.0 multiverse" | sudo tee /etc/apt/sources.list.d/mongodb-org-6.0.list \
+    && sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list' \
+    && wget --quiet -O - https://www.postgresql.org | sudo apt-key add - \
+    && sudo apt-get update \
+    && sudo apt-get install -y mongodb-mongosh postgresql-12 postgresql-client-12 \
+    && sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/* /tmp/*
 
-# Setup PostgreSQL
-
-RUN sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | tee /etc/apt/sources.list.d/pgdg.list' && \
-    sudo apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8 && \
-    sudo apt-get update -y && \
-    sudo apt-get install -y postgresql-12
-
+### Database Configs ###
 ENV PGDATA="/workspace/.pgsql/data"
+ENV PATH="/usr/lib/postgresql/12/bin:$HOME/.pg_ctl/bin:$PATH"
 
-RUN mkdir -p ~/.pg_ctl/bin ~/.pg_ctl/sockets \
-    && echo '#!/bin/bash\n[ ! -d $PGDATA ] && mkdir -p $PGDATA && initdb --auth=trust -D $PGDATA\npg_ctl -D $PGDATA -l ~/.pg_ctl/log -o "-k ~/.pg_ctl/sockets" start\n' > ~/.pg_ctl/bin/pg_start \
-    && echo '#!/bin/bash\npg_ctl -D $PGDATA -l ~/.pg_ctl/log -o "-k ~/.pg_ctl/sockets" stop\n' > ~/.pg_ctl/bin/pg_stop \
+RUN mkdir -p ~/.pg_ctl/bin \
+    && echo '#!/bin/bash\n[ ! -d $PGDATA ] && initdb --auth=trust -D $PGDATA\npg_ctl -D $PGDATA -l ~/.pg_ctl/log -o "-k /tmp" start' > ~/.pg_ctl/bin/pg_start \
+    && echo '#!/bin/bash\npg_ctl -D $PGDATA stop' > ~/.pg_ctl/bin/pg_stop \
     && chmod +x ~/.pg_ctl/bin/*
 
-# ENV DATABASE_URL="postgresql://gitpod@localhost"
-# ENV PGHOSTADDR="127.0.0.1"
-ENV PGDATABASE="postgres"
+### Aliases & Env ###
+RUN echo 'alias python=python3' >> ~/.bashrc \
+    && echo 'alias pip=pip3' >> ~/.bashrc \
+    && echo 'alias mongo=mongosh' >> ~/.bashrc
 
-ENV PATH="/usr/lib/postgresql/12/bin:/home/gitpod/.nvm/versions/node/v${NODE_VERSION}/bin:$HOME/.pg_ctl/bin:$PATH"
-
-
-# Add aliases
-
-RUN echo 'alias run="python3 $GITPOD_REPO_ROOT/manage.py runserver 0.0.0.0:8000"' >> ~/.bashrc && \
-    echo 'alias heroku_config=". $GITPOD_REPO_ROOT/.vscode/heroku_config.sh"' >> ~/.bashrc && \
-    echo 'alias python=python3' >> ~/.bashrc && \
-    echo 'alias pip=pip3' >> ~/.bashrc && \
-    echo 'alias arctictern="python3 $GITPOD_REPO_ROOT/.vscode/arctictern.py"' >> ~/.bashrc && \
-    echo 'alias font_fix="python3 $GITPOD_REPO_ROOT/.vscode/font_fix.py"' >> ~/.bashrc && \
-    echo 'alias set_pg="export PGHOSTADDR=127.0.0.1"' >> ~/.bashrc && \
-    echo 'alias mongo=mongosh' >> ~/.bashrc && \
-    echo 'alias make_url="python3 $GITPOD_REPO_ROOT/.vscode/make_url.py "' >> ~/.bashrc
-
-# Local environment variables
 ENV PORT="8080"
-ENV IP="0.0.0.0"
-
-# Despite the scary name, this is just to allow React and DRF to run together on Gitpod
 ENV DANGEROUSLY_DISABLE_HOST_CHECK=true
